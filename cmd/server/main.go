@@ -20,9 +20,15 @@ func main() {
     defer connection.Close()
     fmt.Println("Connected to rabbitmq server")
 
-    connectionChannel, err := connection.Channel()
+    connectionChannel, _, err := pubsub.DeclareAndBind(
+        connection,
+        routing.ExchangePerilTopic,
+        routing.GameLogSlug,
+        fmt.Sprintf("%v.*", routing.GameLogSlug),
+        pubsub.DurableQueue,
+    )
     if err != nil {
-        fmt.Println("Failed to make channel from rabbitmq connection")
+        fmt.Println("Failed to create and bind game_logs queue")
         return
     }
 
