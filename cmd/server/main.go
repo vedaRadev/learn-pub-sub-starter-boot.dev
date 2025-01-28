@@ -26,6 +26,7 @@ func main() {
         return
     }
 
+    repl:
     for {
         input := gamelogic.GetInput()
         if len(input) == 0 { continue }
@@ -58,7 +59,7 @@ func main() {
 
         case "quit":
             fmt.Println("Exiting")
-            break
+            break repl
 
         default:
             fmt.Printf("Unrecognized command: %v\n", input[0])
