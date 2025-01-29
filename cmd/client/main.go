@@ -8,7 +8,8 @@ import (
     amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) pubsub.AckType {
+type PauseHandler = func(routing.PlayingState) pubsub.AckType
+func handlerPause(gs *gamelogic.GameState) PauseHandler {
     return func(ps routing.PlayingState) pubsub.AckType {
         defer fmt.Print("> ")
         gs.HandlePause(ps)
@@ -16,13 +17,48 @@ func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) pubsub.Ack
     }
 }
 
-func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) pubsub.AckType {
+type MoveHandler = func(gamelogic.ArmyMove) pubsub.AckType
+func handlerMove(gs *gamelogic.GameState, publishChannel *amqp.Channel) MoveHandler {
     return func(move gamelogic.ArmyMove) pubsub.AckType {
         defer fmt.Print("> ")
         switch gs.HandleMove(move) {
-        case gamelogic.MoveOutComeSafe: fallthrough
-        case gamelogic.MoveOutcomeMakeWar: return pubsub.AckTypeAck
+        case gamelogic.MoveOutComeSafe: return pubsub.AckTypeAck
+
+        case gamelogic.MoveOutcomeMakeWar:
+            err := pubsub.PublishJSON(
+                publishChannel,
+                routing.ExchangePerilTopic,
+                fmt.Sprintf("%v.%v", routing.WarRecognitionsPrefix, gs.GetUsername()),
+                gamelogic.RecognitionOfWar {
+                    Attacker: move.Player,
+                    Defender: gs.GetPlayerSnap(),
+                },
+            )
+            if err != nil {
+                fmt.Printf("failed to publish war recognition: %v\n", err)
+                return pubsub.AckTypeNackRequeue
+            }
+            return pubsub.AckTypeAck
+
         default: return pubsub.AckTypeNackDiscard
+        }
+    }
+}
+
+type WarHandler = func(gamelogic.RecognitionOfWar) pubsub.AckType
+func handlerWar(gs *gamelogic.GameState) WarHandler {
+    return func(warDecl gamelogic.RecognitionOfWar) pubsub.AckType {
+        defer fmt.Printf("> ")
+        outcome, _, _ := gs.HandleWar(warDecl)
+        switch outcome {
+        case gamelogic.WarOutcomeNotInvolved: return pubsub.AckTypeNackRequeue
+        case gamelogic.WarOutcomeNoUnits: return pubsub.AckTypeNackDiscard
+        case gamelogic.WarOutcomeOpponentWon: fallthrough
+        case gamelogic.WarOutcomeYouWon: fallthrough
+        case gamelogic.WarOutcomeDraw: return pubsub.AckTypeAck
+        default:
+            fmt.Println("Unrecognized war outcome")
+            return pubsub.AckTypeNackDiscard
         }
     }
 }
@@ -43,27 +79,9 @@ func main() {
     defer connection.Close()
     fmt.Println("Connected to rabbitmq server")
 
-    _, _, err = pubsub.DeclareAndBind(
-        connection,
-        routing.ExchangePerilDirect,
-        fmt.Sprintf("%v.%v", routing.PauseKey, username),
-        routing.PauseKey,
-        pubsub.TransientQueue,
-    )
+    publishChannel, err := connection.Channel()
     if err != nil {
-        fmt.Printf("Failed to create and bind queue to connection: %v\n", err)
-        return
-    }
-
-    userMovesChannel, _, err := pubsub.DeclareAndBind(
-        connection,
-        routing.ExchangePerilTopic,
-        fmt.Sprintf("%v.%v", routing.ArmyMovesPrefix, username),
-        fmt.Sprintf("%v.*", routing.ArmyMovesPrefix),
-        pubsub.TransientQueue,
-    )
-    if err != nil {
-        fmt.Printf("Failed to create and bind moves queue: %v\n", err)
+        fmt.Printf("failed to get publish channel: %v\n", err)
         return
     }
 
@@ -82,7 +100,15 @@ func main() {
         fmt.Sprintf("%v.%v", routing.ArmyMovesPrefix, username),
         fmt.Sprintf("%v.*", routing.ArmyMovesPrefix),
         pubsub.TransientQueue,
-        handlerMove(gamestate),
+        handlerMove(gamestate, publishChannel),
+    )
+    pubsub.SubscribeJSON(
+        connection,
+        routing.ExchangePerilTopic,
+        routing.WarRecognitionsPrefix,
+        fmt.Sprintf("%v.*", routing.WarRecognitionsPrefix),
+        pubsub.DurableQueue,
+        handlerWar(gamestate),
     )
 
     repl:
@@ -103,7 +129,7 @@ func main() {
                 fmt.Printf("Failed to move: %v\n", err)
             } else {
                 err := pubsub.PublishJSON(
-                    userMovesChannel,
+                    publishChannel,
                     routing.ExchangePerilTopic,
                     fmt.Sprintf("%v.%v", routing.ArmyMovesPrefix, username),
                     move,
