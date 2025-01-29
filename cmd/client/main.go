@@ -8,6 +8,20 @@ import (
     amqp "github.com/rabbitmq/amqp091-go"
 )
 
+func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
+    return func(ps routing.PlayingState) {
+        defer fmt.Print("> ")
+        gs.HandlePause(ps)
+    }
+}
+
+func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) {
+    return func(move gamelogic.ArmyMove) {
+        defer fmt.Print("> ")
+        gs.HandleMove(move)
+    }
+}
+
 func main() {
     username, err := gamelogic.ClientWelcome()
     if err != nil {
@@ -24,7 +38,6 @@ func main() {
     defer connection.Close()
     fmt.Println("Connected to rabbitmq server")
 
-    // connectionChannel, queue, err := pubsub.DeclareAndBind(
     _, _, err = pubsub.DeclareAndBind(
         connection,
         routing.ExchangePerilDirect,
@@ -33,11 +46,39 @@ func main() {
         pubsub.TransientQueue,
     )
     if err != nil {
-        fmt.Printf("Failed to create and bind queue to connection: %v", err)
+        fmt.Printf("Failed to create and bind queue to connection: %v\n", err)
+        return
+    }
+
+    userMovesChannel, _, err := pubsub.DeclareAndBind(
+        connection,
+        routing.ExchangePerilTopic,
+        fmt.Sprintf("%v.%v", routing.ArmyMovesPrefix, username),
+        fmt.Sprintf("%v.*", routing.ArmyMovesPrefix),
+        pubsub.TransientQueue,
+    )
+    if err != nil {
+        fmt.Printf("Failed to create and bind moves queue: %v\n", err)
         return
     }
 
     gamestate := gamelogic.NewGameState(username)
+    pubsub.SubscribeJSON(
+        connection,
+        routing.ExchangePerilDirect,
+        fmt.Sprintf("pause.%v", username),
+        routing.PauseKey,
+        pubsub.TransientQueue,
+        handlerPause(gamestate),
+    )
+    pubsub.SubscribeJSON(
+        connection,
+        routing.ExchangePerilTopic,
+        fmt.Sprintf("%v.%v", routing.ArmyMovesPrefix, username),
+        fmt.Sprintf("%v.*", routing.ArmyMovesPrefix),
+        pubsub.TransientQueue,
+        handlerMove(gamestate),
+    )
 
     repl:
     for {
@@ -52,11 +93,21 @@ func main() {
             }
 
         case "move":
-            _, err := gamestate.CommandMove(input)
+            move, err := gamestate.CommandMove(input)
             if err != nil {
                 fmt.Printf("Failed to move: %v\n", err)
             } else {
-                fmt.Println("Move successful")
+                err := pubsub.PublishJSON(
+                    userMovesChannel,
+                    routing.ExchangePerilTopic,
+                    fmt.Sprintf("%v.%v", routing.ArmyMovesPrefix, username),
+                    move,
+                )
+                if err != nil {
+                    fmt.Printf("Failed to publish move: %v\n", err)
+                } else {
+                    fmt.Println("Published move")
+                }
             }
 
         case "status":

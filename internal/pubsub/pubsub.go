@@ -3,6 +3,7 @@ package pubsub
 import (
     "encoding/json"
     "context"
+    "fmt"
     amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -22,6 +23,7 @@ func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
     return nil
 }
 
+// Queue types
 const (
     DurableQueue = iota
     TransientQueue = iota
@@ -32,11 +34,11 @@ func DeclareAndBind(
     exchange,
     queueName,
     key string,
-    simpleQueueType int, // enum to repr "durable" or "transient"
+    queueType int,
 ) (*amqp.Channel, amqp.Queue, error) {
     var queue amqp.Queue
 
-    isDurable := simpleQueueType == DurableQueue
+    isDurable := queueType == DurableQueue
 
     connectionChannel, err := connection.Channel()
     if err != nil {
@@ -51,4 +53,38 @@ func DeclareAndBind(
     }
 
     return connectionChannel, queue, nil
+}
+
+func handleDeliveryMessages[T any](deliveryChannel <-chan amqp.Delivery, handler func(T)) {
+    for message := range deliveryChannel {
+        var body T
+        if err := json.Unmarshal(message.Body, &body); err != nil {
+            fmt.Println("Failed to unmarshal message body")
+        } else {
+            handler(body)
+        }
+        message.Ack(false)
+    }
+}
+
+func SubscribeJSON[T any](
+    connection *amqp.Connection,
+    exchange,
+    queueName,
+    key string,
+    queueType int,
+    handler func(T),
+) error {
+    connectionChannel, _, err := DeclareAndBind(connection, exchange, queueName, key, queueType)
+    if err != nil { return err }
+
+    deliveryChannel, err := connectionChannel.Consume(queueName, "", false, false, false, false, nil)
+    if err != nil {
+        connectionChannel.Close()
+        return err
+    }
+
+    go handleDeliveryMessages(deliveryChannel, handler)
+
+    return nil
 }

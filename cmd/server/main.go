@@ -28,7 +28,7 @@ func main() {
         pubsub.DurableQueue,
     )
     if err != nil {
-        fmt.Println("Failed to create and bind game_logs queue")
+        fmt.Printf("Failed to create and bind game_logs queue: %v", err)
         return
     }
 
