@@ -8,6 +8,17 @@ import (
     amqp "github.com/rabbitmq/amqp091-go"
 )
 
+type LogsHandler = func(routing.GameLog) pubsub.AckType
+func handlerLogs() LogsHandler {
+    return func(log routing.GameLog) pubsub.AckType {
+        defer fmt.Print("> ")
+        if err := gamelogic.WriteLog(log); err != nil {
+            return pubsub.AckTypeNackDiscard
+        }
+        return pubsub.AckTypeAck
+    }
+}
+
 func main() {
     gamelogic.PrintServerHelp()
 
@@ -20,7 +31,19 @@ func main() {
     defer connection.Close()
     fmt.Println("Connected to rabbitmq server")
 
-    connectionChannel, _, err := pubsub.DeclareAndBind(
+    if err := pubsub.SubscribeGob(
+        connection,
+        routing.ExchangePerilTopic,
+        routing.GameLogSlug,
+        fmt.Sprintf("%v.*", routing.GameLogSlug),
+        pubsub.DurableQueue,
+        handlerLogs(),
+    ); err != nil {
+        fmt.Printf("Failed to subscribe to logs queue: %v\n", err)
+        return
+    }
+
+    logsChannel, _, err := pubsub.DeclareAndBind(
         connection,
         routing.ExchangePerilTopic,
         routing.GameLogSlug,
@@ -42,7 +65,7 @@ func main() {
         case "pause":
             fmt.Println("Sending pause message")
             err = pubsub.PublishJSON(
-                connectionChannel,
+                logsChannel,
                 routing.ExchangePerilDirect,
                 routing.PauseKey,
                 routing.PlayingState { IsPaused: true },
@@ -54,7 +77,7 @@ func main() {
         case "resume":
             fmt.Println("Sending resume message")
             err = pubsub.PublishJSON(
-                connectionChannel,
+                logsChannel,
                 routing.ExchangePerilDirect,
                 routing.PauseKey,
                 routing.PlayingState { IsPaused: false },
