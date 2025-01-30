@@ -2,6 +2,7 @@ package main
 
 import (
     "fmt"
+    "time"
     "github.com/bootdotdev/learn-pub-sub-starter/internal/gamelogic"
     "github.com/bootdotdev/learn-pub-sub-starter/internal/pubsub"
     "github.com/bootdotdev/learn-pub-sub-starter/internal/routing"
@@ -45,17 +46,49 @@ func handlerMove(gs *gamelogic.GameState, publishChannel *amqp.Channel) MoveHand
     }
 }
 
+func publishWarLog(publishChannel *amqp.Channel, instigator, message string) pubsub.AckType {
+    log := routing.GameLog {
+        CurrentTime: time.Now(),
+        Username: instigator,
+        Message: message,
+    }
+    err := pubsub.PublishGob(
+        publishChannel,
+        routing.ExchangePerilTopic,
+        routing.GameLogSlug + "." + instigator,
+        log,
+    )
+    if err != nil {
+        fmt.Printf("Failed to publish war log: %v\n", err)
+        return pubsub.AckTypeNackRequeue
+    }
+    return pubsub.AckTypeAck
+}
+
 type WarHandler = func(gamelogic.RecognitionOfWar) pubsub.AckType
-func handlerWar(gs *gamelogic.GameState) WarHandler {
+func handlerWar(gs *gamelogic.GameState, publishChannel *amqp.Channel) WarHandler {
     return func(warDecl gamelogic.RecognitionOfWar) pubsub.AckType {
         defer fmt.Printf("> ")
-        outcome, _, _ := gs.HandleWar(warDecl)
+        outcome, winner, loser := gs.HandleWar(warDecl)
         switch outcome {
         case gamelogic.WarOutcomeNotInvolved: return pubsub.AckTypeNackRequeue
         case gamelogic.WarOutcomeNoUnits: return pubsub.AckTypeNackDiscard
+
         case gamelogic.WarOutcomeOpponentWon: fallthrough
-        case gamelogic.WarOutcomeYouWon: fallthrough
-        case gamelogic.WarOutcomeDraw: return pubsub.AckTypeAck
+        case gamelogic.WarOutcomeYouWon:
+            return publishWarLog(
+                publishChannel,
+                warDecl.Attacker.Username,
+                fmt.Sprintf("%v won a war against %v", winner, loser),
+            )
+
+        case gamelogic.WarOutcomeDraw:
+            return publishWarLog(
+                publishChannel,
+                warDecl.Attacker.Username,
+                fmt.Sprintf("A war between %v and %v resulted in a draw", winner, loser),
+            )
+
         default:
             fmt.Println("Unrecognized war outcome")
             return pubsub.AckTypeNackDiscard
@@ -108,7 +141,7 @@ func main() {
         routing.WarRecognitionsPrefix,
         fmt.Sprintf("%v.*", routing.WarRecognitionsPrefix),
         pubsub.DurableQueue,
-        handlerWar(gamestate),
+        handlerWar(gamestate, publishChannel),
     )
 
     repl:

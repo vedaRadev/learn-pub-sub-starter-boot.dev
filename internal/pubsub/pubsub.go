@@ -2,8 +2,10 @@ package pubsub
 
 import (
     "encoding/json"
+    "encoding/gob"
     "context"
     "fmt"
+    "bytes"
     amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -104,6 +106,23 @@ func SubscribeJSON[T any](
     }
 
     go handleDeliveryMessages(deliveryChannel, handler)
+
+    return nil
+}
+
+func PublishGob[T any](ch *amqp.Channel, exchange, key string, val T) error {
+    var buffer bytes.Buffer
+    encoder := gob.NewEncoder(&buffer)
+    if err := encoder.Encode(&val); err != nil { return err }
+
+    ctx := context.Background()
+    publishSettings := amqp.Publishing {
+        ContentType: "application/gob",
+        Body: buffer.Bytes(),
+    }
+    if err := ch.PublishWithContext(ctx, exchange, key, false, false, publishSettings); err != nil {
+        return err
+    }
 
     return nil
 }
