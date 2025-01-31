@@ -87,6 +87,7 @@ func subscribe[T any](
 ) error {
     connectionChannel, _, err := DeclareAndBind(connection, exchange, queueName, key, queueType)
     if err != nil { return err }
+    if err := connectionChannel.Qos(10, 0, false); err != nil { return err }
     deliveryChannel, err := connectionChannel.Consume(queueName, "", false, false, false, false, nil)
     if err != nil {
         connectionChannel.Close()

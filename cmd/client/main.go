@@ -3,6 +3,7 @@ package main
 import (
     "fmt"
     "time"
+    "strconv"
     "github.com/bootdotdev/learn-pub-sub-starter/internal/gamelogic"
     "github.com/bootdotdev/learn-pub-sub-starter/internal/pubsub"
     "github.com/bootdotdev/learn-pub-sub-starter/internal/routing"
@@ -181,7 +182,28 @@ func main() {
             gamelogic.PrintClientHelp()
 
         case "spam":
-            fmt.Println("Spamming not allowed yet!")
+            if len(input) != 2 {
+                fmt.Println("Invalid format. Usage: spam <amount>")
+                continue
+            }
+            amount, err := strconv.Atoi(input[1])
+            if err != nil {
+                fmt.Println("Invalid amount, could not convert to int")
+                continue
+            }
+            for range amount {
+                maliciousLog := gamelogic.GetMaliciousLog()
+                pubsub.PublishGob(
+                    publishChannel,
+                    routing.ExchangePerilTopic,
+                    routing.GameLogSlug + "." + username,
+                    routing.GameLog {
+                        CurrentTime: time.Now(),
+                        Message: maliciousLog,
+                        Username: username,
+                    },
+                )
+            }
 
         case "quit":
             gamelogic.PrintQuit()
